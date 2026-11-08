@@ -8,6 +8,7 @@
 MODULE_CONFIGS_START()
     MODULE_CONFIG(film_sel)
     MODULE_CONFIG(exp_sel)
+    MODULE_CONFIG(roll_limit)
     MODULE_CONFIG(hud_enabled)
     MODULE_CONFIG(focus_screen)
     MODULE_CONFIG(leds_on_half)
@@ -34,6 +35,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(last_file_number)
     MODULE_CONFIG(roll_folder)
     MODULE_CONFIG(need_wind)
+    MODULE_CONFIG(run_shot)
 MODULE_CONFIGS_END()
 
 /* A camera that ran the built-in film OS kept these settings in Magic

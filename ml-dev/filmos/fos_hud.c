@@ -266,8 +266,11 @@ void fos_hud_draw_rows(uint8_t *buf, int pitch, int y0, int rows, const struct f
         char n[8];
         snprintf(n, sizeof(n), "%d", h->frame);
         int w = seg_text(452, ty, n, lit_count);
-        snprintf(n, sizeof(n), "/%d", h->exposures);
-        text_gray(&fos_font_sm, 452 + w + 2, base - 2, n, lit_count ? 55 : 28, 0);
+        if (!h->no_rolls)           /* no rolls: a count, no "of" */
+        {
+            snprintf(n, sizeof(n), "/%d", h->exposures);
+            text_gray(&fos_font_sm, 452 + w + 2, base - 2, n, lit_count ? 55 : 28, 0);
+        }
     }
 
     /* which film, quietly */
@@ -358,8 +361,11 @@ void fos_hud_plate_rows(uint8_t *buf, int pitch, int y0, int rows, const struct 
     {
         snprintf(b, sizeof(b), "%d", h->frame);
         int fw = seg_text(col[2], ty, b, 1);
-        snprintf(b, sizeof(b), "/%d", h->exposures);
-        text_gray(&fos_font_md, col[2] + fw + 4, ty + 62, b, 55, 0);
+        if (!h->no_rolls)           /* no rolls: a count, no "of" (four digits still fit without it) */
+        {
+            snprintf(b, sizeof(b), "/%d", h->exposures);
+            text_gray(&fos_font_md, col[2] + fw + 4, ty + 62, b, 55, 0);
+        }
     }
     seg_size(15, 26, 3, 6);
 
@@ -392,11 +398,14 @@ void fos_hud_plate_rows(uint8_t *buf, int pitch, int y0, int rows, const struct 
         }
     }
 
-    /* the frames left, like the marks on a film counter */
-    int n = h->exposures > 0 ? h->exposures : 36, done = h->finished ? n : h->frame - 1;
-    int fx = 28, fw = (W - 56) / n;
-    for (int i = 0; i < n; i++)
-        fill(fx + i * fw, 364, fw - 3 > 1 ? fw - 3 : 1, 10, i < done ? p->gray[60] : i == done ? p->red : p->gray[14]);
+    /* the frames left, like the marks on a film counter (no rolls: there is no end to count to) */
+    if (!h->no_rolls)
+    {
+        int n = h->exposures > 0 ? h->exposures : 36, done = h->finished ? n : h->frame - 1;
+        int fx = 28, fw = (W - 56) / n;
+        for (int i = 0; i < n; i++)
+            fill(fx + i * fw, 364, fw - 3 > 1 ? fw - 3 : 1, 10, i < done ? p->gray[60] : i == done ? p->red : p->gray[14]);
+    }
     if (h->need_wind)
         text_led(&fos_font_mdb, 28, 420, "WIND ON", h->blink, 24);
 

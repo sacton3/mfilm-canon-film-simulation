@@ -12,9 +12,10 @@
 
 static float absf(float v) { return v < 0 ? -v : v; }
 
+/* a roll in progress that changing film would finish (never with no rolls: there the film just changes) */
 static int roll_active()
 {
-    return ui_roll.loaded && ui_roll.shot < ui_roll.exposures;
+    return !ui_roll.no_rolls && ui_roll.loaded && ui_roll.shot < ui_roll.exposures;
 }
 
 /* the highlight behind the selected row of a list */
@@ -72,6 +73,20 @@ static void film_card()
 
     fos_text_c(cv, &fos_font_xs, cx, CARD_Y + 26, "IN CAMERA", C_TEXT3, OPAQUE, 48);
     int y = CARD_Y + 250;
+    if (ui_roll.no_rolls)
+    {
+        /* no rolls: the film, and a count that only goes up */
+        const struct fos_film *f = &fos_films[ui_roll.film];
+        snprintf(b, sizeof(b), "%s " T_DOT " ISO %d", f->process, f->box_iso);
+        fos_text_c(cv, &fos_font_xs, cx, y, b, C_ACCENT, OPAQUE, 64);
+        fos_text_c(cv, &fos_font_lg, cx, y + 30, f->name, C_TEXT, OPAQUE, 0);
+        if (ui_roll.total > 0)
+            snprintf(b, sizeof(b), "%d %s", ui_roll.total, ui_roll.total == 1 ? "frame" : "frames");
+        else
+            snprintf(b, sizeof(b), "No frames yet");
+        fos_text_c(cv, &fos_font_md, cx, y + 70, b, ui_roll.total > 0 ? C_TEXT : C_TEXT3, OPAQUE, 0);
+        return;
+    }
     snprintf(b, sizeof(b), "ROLL %03d", ui_roll.number);
     fos_text_c(cv, &fos_font_xs, cx, y, b, C_ACCENT, OPAQUE, 64);
     fos_text_c(cv, &fos_font_lg, cx, y + 30, fos_films[ui_roll.film].name, C_TEXT, OPAQUE, 0);
@@ -199,19 +214,25 @@ static void home_row(int i, int y, int selected)
     static const int icons[H_COUNT] = { ICON_FILM, ICON_ROLL, ICON_PRINTS, ICON_FINDER, ICON_LENS, ICON_SYSTEM };
     char sub[80];
     char ap[8];
+    const char *title = i == H_ROLL && ui_roll.no_rolls ? "Frames" : titles[i];     /* no rolls: there is no roll to open */
     switch (i)
     {
         case H_FILM:
-            snprintf(sub, sizeof(sub), "%s", roll_active() ? (ui_realistic() ? "Change film (rewinds this roll)" : "Change film (finishes this roll)") : "Choose a stock and load a roll");
+            if (ui_roll.no_rolls)
+                snprintf(sub, sizeof(sub), "Choose a film");
+            else
+                snprintf(sub, sizeof(sub), "%s", roll_active() ? (ui_realistic() ? "Change film (rewinds this roll)" : "Change film (finishes this roll)") : "Choose a stock and load a roll");
             break;
         case H_ROLL:
-            if (ui_roll.loaded)
+            if (ui_roll.no_rolls)
+                snprintf(sub, sizeof(sub), "%d shot on %s", ui_roll.total, fos_films[ui_roll.film].name);
+            else if (ui_roll.loaded)
                 snprintf(sub, sizeof(sub), "Roll %03d " T_DOT " %d of %d", ui_roll.number, ui_roll.shot, ui_roll.exposures);
             else
                 snprintf(sub, sizeof(sub), "No film in the camera");
             break;
         case H_DARK:
-            snprintf(sub, sizeof(sub), "Develop your rolls " T_DOT " your prints");
+            snprintf(sub, sizeof(sub), ui_roll.no_rolls ? "Develop your frames " T_DOT " your prints" : "Develop your rolls " T_DOT " your prints");
             break;
         case H_FINDER:
             snprintf(sub, sizeof(sub), "HUD %s " T_DOT " wind %s", fos_port_get(FS_HUD) ? "on" : "off",
@@ -225,13 +246,16 @@ static void home_row(int i, int y, int selected)
                 snprintf(sub, sizeof(sub), "%s", fos_port_lens_name());
             break;
         case H_SYSTEM:
-            snprintf(sub, sizeof(sub), "%s mode " T_DOT " screen colour " T_DOT " Canon menu", ui_realistic() ? "Realistic" : "Basic");
+            if (ui_roll.no_rolls)
+                snprintf(sub, sizeof(sub), "Roll limit " T_DOT " screen colour " T_DOT " Canon menu");
+            else
+                snprintf(sub, sizeof(sub), "%s mode " T_DOT " screen colour " T_DOT " Canon menu", ui_realistic() ? "Realistic" : "Basic");
             break;
     }
     int x = LIST_X + 20;
     fcol ic = selected ? C_ACCENT : C_TEXT3;
     ui_icon(icons[i], x + 14, y + ROW_H / 2, ic, OPAQUE);
-    fos_text(cv, &fos_font_mdb, x + 46, y + 28, titles[i], selected ? C_TEXT : C_TEXT2, OPAQUE, 0);
+    fos_text(cv, &fos_font_mdb, x + 46, y + 28, title, selected ? C_TEXT : C_TEXT2, OPAQUE, 0);
     fos_text(cv, &fos_font_sm, x + 46, y + 49, sub, C_TEXT3, OPAQUE, 0);
     fos_tri(cv, LIST_X + LIST_W - 22, y + ROW_H / 2, 8, 0, selected ? C_TEXT2 : FC(RAMP_GRAY, 60), OPAQUE);
 }
@@ -286,7 +310,7 @@ enum { IT_TOGGLE, IT_CHOICE, IT_FSTOP, IT_ACTION, IT_INFO, IT_LEVEL, IT_PAGE };
 
 #define PAGE_SYSTEM  2
 #define PAGE_SCREEN  3
-#define SYS_SCREEN_ROW 3                /* where Screen colour sits in System */
+#define SYS_SCREEN_ROW 4                /* where Screen colour sits in System */
 #define ACT_SCR_RESET 100               /* handled here, not by the port */
 
 struct item
@@ -303,6 +327,7 @@ static const char *const wind_choices[] = { "Off", "Reminder", "Locks shutter" }
 static const char *const apkey_choices[] = { "Dial in Av", "Up / Down", "Menu only" };
 static const char *const start_choices[] = { "Off", "When no film", "Always" };
 static const char *const mode_choices[] = { "Basic", "Realistic" };
+static const char *const rolllim_choices[] = { "Off", "36 frames", "24 frames", "12 frames" };
 static const char *const flip_choices[] = { "Auto", "Normal", "Upside down", "Mirrored" };
 
 static const struct item finder_items[] =
@@ -325,7 +350,8 @@ static const struct item lens_items[] =
 
 static const struct item system_items[] =
 {
-    { "Film mode", IT_CHOICE, FS_MODE, mode_choices, 2, "Basic: a finished roll goes straight to the darkroom. Realistic: rewind it first." },
+    { "Roll limit", IT_CHOICE, FS_ROLLLIM, rolllim_choices, 4, "Off: no rolls, shoot as many frames as you like. Or end a roll at 36, 24 or 12." },
+    { "Film mode", IT_CHOICE, FS_MODE, mode_choices, 2, "A roll limit only. Basic: a full roll goes to the darkroom. Realistic: rewind it." },
     { "Start screen", IT_CHOICE, FS_STARTUP, start_choices, 3, "The film shelf when the camera turns on." },
     { "Boot animation", IT_TOGGLE, FS_BOOTANIM, 0, 0, "The aperture opening on the name at power on." },
     { "Screen colour", IT_PAGE, PAGE_SCREEN, 0, 0, "Match these colours to what you see around you." },
@@ -355,7 +381,7 @@ static struct { const char *title; const char *sub; const struct item *items; in
 {
     { "Viewfinder", "What you see in LiveView while you shoot", finder_items, NITEMS(finder_items) },
     { "Lens", "Aperture for manual lenses", lens_items, NITEMS(lens_items) },
-    { "System", "Film mode, screen colour, start up and the Canon menu", system_items, NITEMS(system_items) },
+    { "System", "Roll limit, screen colour, start up and the Canon menu", system_items, NITEMS(system_items) },
     { "Screen colour", "Live: the whole film OS changes as you go", screen_items, NITEMS(screen_items) },
 };
 
@@ -933,19 +959,23 @@ static void roll_bake()
 {
     ui_bg_plain();
     ui_to_bg(1);
-    ui_status_bar("ROLL");
+    /* no rolls: this is the frame counter of the film in the camera, and SET goes to the darkroom */
+    ui_status_bar(ui_roll.no_rolls ? "FRAMES" : "ROLL");
     struct hint h1[] = { { "SET", ui_realistic() ? "Rewind roll" : "Finish roll" }, { "MENU", "Back" } };
     struct hint h2[] = { { "SET", "Load film" }, { "MENU", "Back" } };
-    if (ui_roll.loaded) ui_hints(h1, 2); else ui_hints(h2, 2);
+    struct hint h3[] = { { "SET", "Darkroom" }, { "MENU", "Back" } };
+    if (ui_roll.no_rolls) ui_hints(h3, 2);
+    else if (ui_roll.loaded) ui_hints(h1, 2);
+    else ui_hints(h2, 2);
     ui_to_bg(0);
 }
 
 void roll_enter(int arg)
 {
     fos_port_roll(&ui_roll);
-    dial.x = -1.5f; dial.v = 0;     /* from "S", like a fresh counter */
+    dial.x = ui_roll.no_rolls ? ui_roll.total - 2.0f : -1.5f; dial.v = 0;     /* from "S", like a fresh counter (no rolls: just short of the count, so it does not spin through hundreds) */
     roll_sheet_drawn = 0;
-    asking_rewind = arg == 1 && ui_roll.loaded;     /* the roll has just been finished */
+    asking_rewind = arg == 1 && ui_roll.loaded && !ui_roll.no_rolls;     /* the roll has just been finished */
     sheet.x = 0; sheet.v = 0;
     rewinding = 0;
     roll_bake();
@@ -972,7 +1002,8 @@ void roll_key(int k)
     switch (k)
     {
         case FK_SET:
-            if (ui_roll.loaded) asking_rewind = 1;
+            if (ui_roll.no_rolls) ui_go(SCR_DARK, 0, GO_PUSH);
+            else if (ui_roll.loaded) asking_rewind = 1;
             else ui_go(SCR_SHELF, 1, GO_PUSH);
             break;
         case FK_MENU:
@@ -988,7 +1019,7 @@ void roll_key(int k)
 int roll_update(int dt)
 {
     int moving = 0;
-    float target = ui_roll.loaded ? ui_roll.shot : -1.5f;
+    float target = ui_roll.no_rolls ? (float) ui_roll.total : ui_roll.loaded ? ui_roll.shot : -1.5f;
     if (rewinding)
     {
         rewind_t += dt;
@@ -1030,19 +1061,28 @@ static void counter_dial(float frames)
     fos_ring(cv, cx, cy, (DIAL_R - 30) * 256, 256, FC(RAMP_METAL, 40), OPAQUE);
     /* 7.5 degrees a frame; frame "frames" sits at the top */
     const int per = 65536 * 75 / 3600;
-    for (int f = -2; f <= 40; f++)
+    /* a roll's dial has its 36 or so numbers; with no rolls the count goes on, so only the ones near the mark are drawn */
+    int f0 = -2, f1 = 40;
+    if (ui_roll.no_rolls)
+    {
+        f0 = (int) frames - 24 < -2 ? -2 : (int) frames - 24;
+        f1 = (int) frames + 24;
+    }
+    /* a number every 2 frames, every 5 once they have three digits (they would touch) */
+    int step = ui_roll.no_rolls && f1 >= 100 ? 5 : 2;
+    for (int f = f0; f <= f1; f++)
     {
         float rel = f - frames;
         if (absf(rel) > 22) continue;
         int a = -16384 + (int) (rel * per);
-        int r = f % 2 == 0 || f < 0 ? DIAL_R - 16 : DIAL_R - 10;
+        int r = f % step == 0 || f < 0 ? DIAL_R - 16 : DIAL_R - 10;
         int x = cx + fos_cos(a) * r / 16, y = cy + fos_sin(a) * r / 16;
         float near = clampf(1 - absf(rel) / 3.0f, 0, 1);
         if (f == -2)
             fos_text_c(cv, &fos_font_mdb, x >> 8, (y >> 8) + 7, "S", FC(RAMP_RED, 140 + (int) (near * 40)), OPAQUE, 0);
-        else if (f >= 0 && f % 2 == 0)
+        else if (f >= 0 && f % step == 0)
         {
-            char b[4];
+            char b[8];
             snprintf(b, sizeof(b), "%d", f);
             fcol c = near > 0.5f ? C_TEXT : FC(RAMP_GRAY, 120 + (int) (near * 100));
             fos_text_c(cv, &fos_font_mdb, x >> 8, (y >> 8) + 7, b, c, OPAQUE, 0);
@@ -1090,12 +1130,14 @@ void roll_draw()
         return;
     }
     const struct fos_film *f = &fos_films[ui_roll.film];
-    snprintf(b, sizeof(b), "ROLL %03d", ui_roll.number);
+    if (ui_roll.no_rolls) snprintf(b, sizeof(b), "IN CAMERA");          /* no rolls: no roll number, no size */
+    else snprintf(b, sizeof(b), "ROLL %03d", ui_roll.number);
     fos_text(cv, &fos_font_xs, x, 96, b, C_ACCENT, OPAQUE, 64);
     fos_text(cv, &fos_font_lg, x, 132, f->name, C_TEXT, OPAQUE, 0);
-    snprintf(b, sizeof(b), "%s " T_DOT " ISO %d " T_DOT " %d exposures", f->process, f->box_iso, ui_roll.exposures);
+    if (ui_roll.no_rolls) snprintf(b, sizeof(b), "%s " T_DOT " ISO %d", f->process, f->box_iso);
+    else snprintf(b, sizeof(b), "%s " T_DOT " ISO %d " T_DOT " %d exposures", f->process, f->box_iso, ui_roll.exposures);
     fos_text(cv, &fos_font_sm, x, 158, b, C_TEXT2, OPAQUE, 0);
-    if (ui_roll.loaded_at[0])
+    if (!ui_roll.no_rolls && ui_roll.loaded_at[0])
     {
         snprintf(b, sizeof(b), "Loaded %s", ui_roll.loaded_at);
         fos_text(cv, &fos_font_sm, x, 180, b, C_TEXT3, OPAQUE, 0);
@@ -1107,7 +1149,7 @@ void roll_draw()
     fos_fill(cv, x, y + 8, 340, 1, C_LINE);
     y += 34;
     if (!ui_roll.nrecent)
-        fos_text(cv, &fos_font_sm, x, y, "Nothing shot yet " T_MDASH " the roll is fresh.", C_TEXT3, OPAQUE, 0);
+        fos_text(cv, &fos_font_sm, x, y, ui_roll.no_rolls ? "Nothing shot yet." : "Nothing shot yet " T_MDASH " the roll is fresh.", C_TEXT3, OPAQUE, 0);
     for (int i = 0; i < ui_roll.nrecent && i < FOS_RECENT; i++, y += 30)
     {
         snprintf(b, sizeof(b), "%d", ui_roll.recent[i].no);

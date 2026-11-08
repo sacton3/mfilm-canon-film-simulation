@@ -1,0 +1,79 @@
+name: Dev build (550D, no-rolls)
+
+# A small workflow for the no-rolls work on this fork: the simulator checks and previews, and the
+# 550D card files, nothing else. camera.yml (every camera, releases) is left as upstream has it.
+#   push to the no-rolls branch       builds both, keeps the results as artifacts
+#   Actions > this workflow > Run     the same by hand (once this file is on the default branch)
+on:
+  workflow_dispatch:
+  push:
+    branches: ["no-rolls"]
+    paths: ["ml-dev/**", "VERSION", ".github/workflows/dev.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # the darkroom on the PC simulator (the same check camera.yml runs), then every screen rendered to a PNG
+  # so a change can be looked at without a camera (ml-dev/filmos/sim/previews.sh)
+  simulator:
+    runs-on: ubuntu-24.04
+    name: simulator (darkroom checks and screen previews)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python for the film tables and the previews
+        run: python -m pip install -q numpy scipy pillow
+      - name: Build the simulator
+        run: make -C ml-dev/filmos/sim out/sim
+      - name: Develop the problem rolls
+        run: bash ml-dev/filmos/sim/cardtest.sh
+      - name: Render the screen previews
+        continue-on-error: true       # a preview that fails to render must not hide the checks above
+        run: bash ml-dev/filmos/sim/previews.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screen-previews
+          path: ml-dev/filmos/preview/
+          if-no-files-found: warn
+
+  # the 550D build, as camera.yml makes it: the film OS as a module (ML/modules/filmos.mo), loaded after boot
+  camera:
+    runs-on: ubuntu-24.04
+    name: camera 550D.109 (film OS as a module)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # ML's module build still imports distutils (gone in 3.12)
+      - name: Toolchain and Magic Lantern (the commit the fork is made against)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi zip qemu-user
+          python -m pip install -q numpy scipy pillow segno docutils
+          git clone -q --filter=blob:none https://github.com/reticulatedpines/magiclantern_simplified.git "$HOME/ml/magiclantern_simplified"
+          git -C "$HOME/ml/magiclantern_simplified" checkout -q ed3e7c0dfacfdeaf3349dee73edf9e3621217462
+          arm-none-eabi-gcc --version | head -1
+      - name: Build
+        run: bash ml-dev/build_fork.sh 550D.109 --module
+      - name: Zip
+        run: |
+          d=ml-dev/out/fork-550D.109-module
+          cp ml-dev/CAMERA-README.txt "$d/M-FILM-README.txt"
+          # the licence and the notices travel with the binaries (GPL-2.0 section 1; the MIT notice of Film-Luts)
+          cp LICENSE "$d/LICENSE.txt"
+          cp THIRD_PARTY.md "$d/THIRD_PARTY.txt"
+          (cd "$d" && zip -qr "$GITHUB_WORKSPACE/M-Film-camera-550D.109.zip" .)
+          ls -la M-Film-camera-550D.109.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-M-Film-camera-550D.109
+          path: M-Film-camera-550D.109.zip
+          if-no-files-found: error

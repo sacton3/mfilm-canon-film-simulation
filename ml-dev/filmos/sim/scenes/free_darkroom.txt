@@ -1,0 +1,5 @@
+# no rolls: the darkroom lists frames, not rolls
+limit 0
+roll 1 14 36 12 143
+open darkroom
+3000 end

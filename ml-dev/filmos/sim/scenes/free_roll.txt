@@ -1,0 +1,7 @@
+# no rolls: home -> Frames, the counter keeps counting (143) and SET goes to the darkroom
+limit 0
+roll 1 14 36 12 143
+open home
+700 down
+1000 set
+3200 end

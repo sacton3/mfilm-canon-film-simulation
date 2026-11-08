@@ -330,12 +330,19 @@ static void tex_dx(struct fos_can *c, int u, int v, int iso, int exposures, int 
     for (int i = 0; i < (int) (sizeof(isos) / sizeof(isos[0])); i++)
         if (isos[i] == iso) code = i + 3;
     int row1 = 1 | (code << 1);
-    int row2 = 1 | ((exposures == 36 ? 5 : exposures == 24 ? 3 : 2) << 1) | 0x20;
+    int row2 = 1 | ((exposures == 36 || exposures <= 0 ? 5 : exposures == 24 ? 3 : 2) << 1) | 0x20;     /* no roll size (no rolls): as 36 */
     for (int i = 0; i < 6; i++)
     {
         tex_rect(c, u + i * 7, v, 6, 8, (row1 >> i) & 1 ? steel : paint);
         tex_rect(c, u + i * 7, v + 9, 6, 8, (row2 >> i) & 1 ? steel : paint);
     }
+}
+
+/* "135-36" on the canister; with no roll size (no rolls) just the format, "135" */
+static void format_135(char *buf, int size, int exposures)
+{
+    if (exposures > 0) snprintf(buf, size, "135-%d", exposures);
+    else snprintf(buf, size, "135");
 }
 
 /* a UPC-ish barcode, the same for the same stock, about 50 texels wide */
@@ -374,7 +381,7 @@ static void paint_common(struct fos_can *c, int body, int text, const char *proc
     int u_dx = U_LIP + 22;                  /* 255 */
     tex_rect(c, u_dx - 3, TH / 2 - 12, 48, 24, black);
     tex_dx(c, u_dx, TH / 2 - 9, f->box_iso, c->exposures, steel, black);
-    snprintf(buf, sizeof(buf), "135-%d", c->exposures);
+    format_135(buf, sizeof(buf), c->exposures);
     tex_text(c, &fos_font_lsm, u_dx + 21, TH / 2 - 20, buf, text, 16, 0);
 
     tex_barcode(c, U_LIP + 76, TH - 52, 26, f->key, text);     /* 309, round the seam */
@@ -405,9 +412,10 @@ static void paint_parts(struct fos_can *c, const struct fos_film *f)
     const int u = U_FRONT - 4;
     int bg = label_ink(c, l->bg), band = label_ink(c, l->band), acc = label_ink(c, l->accent);
     int txt = label_ink(c, l->text), num = label_ink(c, l->num);
-    char bottom[40];
-    if (l->sub[0]) snprintf(bottom, sizeof(bottom), "%s  135-%d", l->sub, c->exposures);
-    else snprintf(bottom, sizeof(bottom), "135-%d", c->exposures);
+    char bottom[40], fmt[16];
+    format_135(fmt, sizeof(fmt), c->exposures);
+    if (l->sub[0]) snprintf(bottom, sizeof(bottom), "%s  %s", l->sub, fmt);
+    else snprintf(bottom, sizeof(bottom), "%s", fmt);
     tex_rect(c, 0, 0, TW, TH, bg);
     const struct fos_font *word = fos_text_w(&fos_font_lname, l->word, -32) <= 108 ? &fos_font_lname : &fos_font_lsm;
     switch (l->style)
@@ -451,7 +459,7 @@ static void paint_label(struct fos_can *c)
     const struct fos_film *f = &fos_films[c->film];
     const int u = U_FRONT - 4;           /* optical centre of the front panel */
     char exp[16];
-    snprintf(exp, sizeof(exp), "135-%d", c->exposures);
+    format_135(exp, sizeof(exp), c->exposures);
     c->ramps = 1 << RAMP_GRAY;          /* what an unpainted texel is */
     c->gloss = 220;
     c->leader_ramp = RAMP_LEADER;

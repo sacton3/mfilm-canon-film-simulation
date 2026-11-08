@@ -46,8 +46,26 @@ static int list[MAX_LIST], nlist;   /* its films */
 static int group_at[FOS_NGROUPS];   /* the place last chosen on each shelf */
 static struct spring drop;          /* a new shelf's canisters dropping in, 1 -> 0 */
 static int drop_dir;
-static int exp_sel;
+static int exp_sel;                 /* the roll limit's size (an index into fos_exposure_choices); the shelf no longer changes it */
 static struct spring exp_roll;      /* the exposures chip rolls to the new number */
+
+/* the roll size the canisters wear: the roll limit's; with no rolls, none */
+static int shelf_exposures()
+{
+    return ui_roll.no_rolls ? 0 : fos_exposure_choices[exp_sel];
+}
+
+/* the film in the camera: with no rolls always; else while its roll has frames left */
+static int film_in_camera()
+{
+    return ui_roll.loaded && (ui_roll.no_rolls || ui_roll.shot < ui_roll.exposures);
+}
+
+/* choosing another film would end a roll with frames left: ask first (never with no rolls, where the film just changes) */
+static int roll_in_progress()
+{
+    return !ui_roll.no_rolls && ui_roll.loaded && ui_roll.shot < ui_roll.exposures;
+}
 static int exp_prev;
 static int nudge;                   /* bump at either end */
 
@@ -99,7 +117,7 @@ struct fos_can *ui_can(int film)
         if (!cans[i].c || (cans[slot].c && cans[i].used < cans[slot].used)) slot = i;
     }
     fos_can_free(cans[slot].c);
-    cans[slot].c = fos_can_new(film, fos_exposure_choices[exp_sel]);
+    cans[slot].c = fos_can_new(film, shelf_exposures());
     cans[slot].film = film;
     cans[slot].used = ++can_clock;
     return cans[slot].c;
@@ -264,10 +282,10 @@ static void contact_shadow(int cx, int y, int rx, int ry, int strength)
 
 void shelf_enter(int arg)
 {
-    exp_sel = fos_clamp(fos_port_get(FS_EXP), 0, FOS_NEXP - 1);
+    exp_sel = fos_clamp(fos_port_get(FS_ROLLLIM) - 1, 0, FOS_NEXP - 1);      /* 36, 24 or 12 with a roll limit; unused without */
     exp_prev = exp_sel;
     exp_roll.x = 1; exp_roll.v = 0;
-    int film = ui_roll.loaded && ui_roll.shot < ui_roll.exposures ? ui_roll.film : fos_port_get(FS_FILM);
+    int film = film_in_camera() ? ui_roll.film : fos_port_get(FS_FILM);
     film = fos_clamp(film, 0, fos_nfilms - 1);
     target = shelf_list(fos_films[film].group, film);
     for (int g = 0; g < FOS_NGROUPS; g++) group_at[g] = 0;
@@ -289,7 +307,7 @@ void shelf_enter(int arg)
     has_samples = f != 0;
     if (f) fos_port_close(f);
     paint_around(target);
-    ui_cans_exposures(fos_exposure_choices[exp_sel]);
+    ui_cans_exposures(shelf_exposures());
     bake();
 }
 
@@ -299,11 +317,6 @@ void shelf_leave()
     sm_have = 0;
     if (sm_state != SM_OFF) fos_port_palette();
     sm_state = SM_OFF;
-}
-
-static int roll_in_progress()
-{
-    return ui_roll.loaded && ui_roll.shot < ui_roll.exposures;
 }
 
 static void start_loading()
@@ -520,10 +533,7 @@ void shelf_key(int k)
             break;
         }
         case FK_INFO:
-            exp_prev = exp_sel;
-            exp_sel = (exp_sel + (k == FK_UP ? FOS_NEXP - 1 : 1)) % FOS_NEXP;
-            exp_roll.x = 0; exp_roll.v = 0;
-            ui_cans_exposures(fos_exposure_choices[exp_sel]);
+            /* the roll size is the roll limit's now (System): nothing to change here */
             break;
         case FK_SET:
             if (roll_in_progress()) asking = 1;
@@ -633,7 +643,7 @@ static void draw_canisters(float lift_mid, float spread, float fade_sides, int l
         fos_can_draw(cv, c, &p);
 
         /* the film that is in the camera wears a tag */
-        if (roll_in_progress() && i == ui_roll.film && !loading)
+        if (film_in_camera() && i == ui_roll.film && !loading)
         {
             int cx = p.cx8 >> 8;
             int top = p.floor_y - fos_can_height(p.scale) - 14;
@@ -653,10 +663,13 @@ static const char *chip_labels[3] = { "ISO", "PROCESS", "EXP" };
 static const char *chip_widest[3] = { "800", "C-41", "36" };
 static int chip_x[3], chip_w[3], chip_vx[3];
 
+/* ISO and PROCESS, and with a roll limit EXP: the size, read only (no rolls: there is none to show) */
+static int nchips() { return ui_roll.no_rolls ? 2 : 3; }
+
 static void chips_layout()
 {
     int total = 0;
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < nchips(); i++)
     {
         int lw = fos_text_w(&fos_font_xs, chip_labels[i], 24);
         int vw = fos_text_w(&fos_font_mdb, chip_widest[i], 0);
@@ -664,7 +677,7 @@ static void chips_layout()
         total += chip_w[i] + (i ? 10 : 0);
     }
     int x = 360 - total / 2;
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < nchips(); i++)
     {
         chip_x[i] = x;
         chip_vx[i] = x + 12 + fos_text_w(&fos_font_xs, chip_labels[i], 24) + 8;
@@ -674,10 +687,10 @@ static void chips_layout()
 
 static void draw_static(int alpha)
 {
-    struct hint h[] = { { "<>", "Film" }, { "^v", "Shelf" }, { "INFO", "Exposures" },
-                        { "SET", roll_in_progress() ? (ui_realistic() ? "Rewind & load" : "Finish & load") : "Load" }, { "MENU", "Back" },
-                        { "PLAY", "Sample" } };
-    if (alpha >= OPAQUE) ui_hints(h, has_samples ? 6 : 5);
+    struct hint h[] = { { "<>", "Film" }, { "^v", "Shelf" },
+                        { "SET", ui_roll.no_rolls ? "Use film" : roll_in_progress() ? (ui_realistic() ? "Rewind & load" : "Finish & load") : "Load" },
+                        { "MENU", "Back" }, { "PLAY", "Sample" } };
+    if (alpha >= OPAQUE) ui_hints(h, has_samples ? 5 : 4);
     /* the shelves, this one lit */
     int tw = 0;
     for (int g = 0; g < FOS_NGROUPS; g++) tw += fos_text_w(&fos_font_xs, fos_group_names[g], 64) + (g ? 30 : 0);
@@ -689,7 +702,7 @@ static void draw_static(int alpha)
         if (g == group) fos_rrect(cv, tx + w / 2 - 8, TABS_Y + 6, 16, 3, 1, C_ACCENT, alpha);
         tx += w + 30;
     }
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < nchips(); i++)
     {
         int exp = i == 2;
         fos_rrect(cv, chip_x[i], CHIPS_Y, chip_w[i], CHIP_H, CHIP_H / 2, exp ? FC(RAMP_GRAY, 24) : FC(RAMP_GRAY, 17), alpha);
@@ -833,7 +846,8 @@ static void draw_info()
         fos_text(cv, &fos_font_mdb, chip_vx[1], CHIPS_Y + 19, f->process, C_TEXT, alpha, 0);
     }
 
-    /* exposures: the number rolls up or down when it changes */
+    /* the roll limit's size (no rolls: no chip) */
+    if (ui_roll.no_rolls) return;
     struct fos_canvas save = *cv;
     fos_clip(cv, chip_vx[2] - 4, CHIPS_Y + 3, chip_x[2] + chip_w[2] - 8, CHIPS_Y + CHIP_H - 3);
     char nb[8], ob[8];
@@ -874,10 +888,13 @@ static void draw_loading()
     {
         int a = (int) (ta * 256);
         char b[48];
-        snprintf(b, sizeof(b), "ROLL %03d", ui_roll.number);
+        /* no rolls: no number and no size, the film is in the camera */
+        if (ui_roll.no_rolls) snprintf(b, sizeof(b), "IN CAMERA");
+        else snprintf(b, sizeof(b), "ROLL %03d", ui_roll.number);
         fos_text_c(cv, &fos_font_xs, 360, BRAND_Y + 8, b, C_ACCENT, a, 64);
-        fos_text_c(cv, &fos_font_xl, 360, NAME_Y + 8 - (int) ((1 - ta) * 12), "Loaded", C_TEXT, a, 0);
-        snprintf(b, sizeof(b), "%s  " T_DOT "  %d exposures", fos_films[list[target]].name, fos_exposure_choices[exp_sel]);
+        fos_text_c(cv, &fos_font_xl, 360, NAME_Y + 8 - (int) ((1 - ta) * 12), ui_roll.no_rolls ? "Ready" : "Loaded", C_TEXT, a, 0);
+        if (ui_roll.no_rolls) snprintf(b, sizeof(b), "%s  " T_DOT "  ISO %d", fos_films[list[target]].name, fos_films[list[target]].box_iso);
+        else snprintf(b, sizeof(b), "%s  " T_DOT "  %d exposures", fos_films[list[target]].name, fos_exposure_choices[exp_sel]);
         fos_text_c(cv, &fos_font_sm, 360, DESC_Y + 8, b, C_TEXT2, a, 0);
     }
 }

@@ -1,0 +1,6 @@
+# no rolls: home shows the film and a count; the rows talk of frames, not a roll
+limit 0
+roll 1 14 36 12 143
+open home
+900 down
+1800 end

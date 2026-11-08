@@ -1,0 +1,13 @@
+# no rolls: home -> System, the first row is Roll limit, Off; then turn it to 36 frames and back
+limit 0
+roll 1 14 36 12 143
+open home
+500 down
+700 down
+900 down
+1100 down
+1300 down
+1500 set
+2600 right
+3500 left
+4400 end

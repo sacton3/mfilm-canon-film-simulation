@@ -39,6 +39,9 @@ static int settings[FS_COUNT] = {
     [FS_APKEYS] = 0, [FS_LENS_WIDE] = 6, [FS_FSTOP] = 10,
     [FS_STARTUP] = 2, [FS_PLAYLOCK] = 1, [FS_BOOTANIM] = 1, [FS_DEBUG] = 0, [FS_MODE] = 0,
     [FS_FILM] = 0, [FS_EXP] = 0, [FS_SCR_FLIP] = 0, [FS_EXPSIM] = 1,
+    /* the camera's default is 0 (no rolls); the simulator starts with a limit of 36 so the scenes that were
+     * written for rolls still show them. FOS_ROLLLIM=0 or a scene's "limit 0" shows the camera's default */
+    [FS_ROLLLIM] = 1,
 };
 static struct fos_roll roll = { 1, 12, 1, 36, 14, 0, "2026-10-21 18:02", 3,
     { { 14, "21:47", "2" }, { 13, "21:40", "2" }, { 12, "21:33", "2.8" } } };
@@ -178,7 +181,7 @@ int  fos_port_dev_cap() { return 12; }
 void *fos_port_alloc(int size) { return malloc(size); }
 void fos_port_free(void *p) { free(p); }
 
-void fos_port_roll(struct fos_roll *r) { *r = roll; }
+void fos_port_roll(struct fos_roll *r) { *r = roll; r->no_rolls = settings[FS_ROLLLIM] == 0; }
 int  fos_port_get(int s)
 {
     /* the screen orientation is only on swivel screens: not on the EOS M, unless FOS_SWIVEL=1 */
@@ -189,8 +192,16 @@ int  fos_port_get(int s)
 }
 void fos_port_set(int s, int v)
 {
+    int old = s >= 0 && s < FS_COUNT ? settings[s] : 0;
     if (s >= 0 && s < FS_COUNT) settings[s] = v;
     if (s == FS_SCR_STD || s == FS_SCR_SAT || s == FS_SCR_WARM || s == FS_SCR_BRIGHT) fos_port_palette();
+    /* as the camera does: the roll ends, and with no rolls (0) a new one is loaded at once, same film */
+    if (s == FS_ROLLLIM && v != old)
+    {
+        roll.loaded = v == 0;
+        roll.shot = 0; roll.total = 0; roll.exposures = FOS_SEGMENT;
+        if (v == 0) roll.number++;
+    }
 }
 
 void fos_port_action(int a, int x, int y)
@@ -198,11 +209,21 @@ void fos_port_action(int a, int x, int y)
     fprintf(stderr, "[%6d ms] action %d (%d, %d)\n", now_ms, a, x, y);
     if (a == FA_LOAD)
     {
-        roll.loaded = 1; roll.number++; roll.film = x; roll.exposures = fos_exposure_choices[y];
-        roll.shot = 0; roll.nrecent = 0;
-        strcpy(roll.loaded_at, "2026-10-22 09:41");
+        int none = settings[FS_ROLLLIM] == 0;
+        /* no rolls: the film the camera has already changes nothing */
+        if (!(none && roll.loaded && roll.film == x))
+        {
+            roll.loaded = 1; roll.number++; roll.film = x;
+            roll.exposures = none ? FOS_SEGMENT : fos_exposure_choices[settings[FS_ROLLLIM] - 1];
+            roll.shot = 0; roll.nrecent = 0; roll.total = 0;
+            strcpy(roll.loaded_at, "2026-10-22 09:41");
+        }
     }
-    if (a == FA_REWIND) roll.loaded = 0;
+    if (a == FA_REWIND)
+    {
+        if (settings[FS_ROLLLIM] == 0) { roll.number++; roll.shot = 0; }      /* no rolls: the next one starts at once */
+        else roll.loaded = 0;
+    }
     if (a == FA_BUSY) fprintf(stderr, "[%6d ms] %s\n", now_ms, x ? "busy: developing" : "busy: done");
 }
 
@@ -234,6 +255,7 @@ int main(int argc, char **argv)
     outdir = argv[2];
     if (strcmp(outdir, "-")) mkdir(outdir, 0755);
     if (getenv("FOS_MODE")) settings[FS_MODE] = atoi(getenv("FOS_MODE"));     /* 1: Realistic */
+    if (getenv("FOS_ROLLLIM")) settings[FS_ROLLLIM] = atoi(getenv("FOS_ROLLLIM"));  /* 0: no rolls (the camera's default), 1..3: 36, 24, 12 */
     int open = FOS_OPEN_SHELF;
     FILE *f = fopen(argv[1], "r");
     if (!f) { perror(argv[1]); return 1; }
@@ -244,15 +266,20 @@ int main(int argc, char **argv)
         char a[64], b[64];
         int t, n1, n2, n3, n4;
         if (line[0] == '#' || line[0] == '\n') continue;
-        /* roll <film> <shot> <exposures> [<number>]: the roll in the camera */
-        int nr = sscanf(line, "roll %d %d %d %d", &n1, &n2, &n3, &n4);
+        /* roll <film> <shot> <exposures> [<number> [<total>]]: the roll in the camera; total is the count with
+         * no rolls (limit 0): the frames shot on this film since it was chosen, over the hidden rolls */
+        int n5 = 0;
+        int nr = sscanf(line, "roll %d %d %d %d %d", &n1, &n2, &n3, &n4, &n5);
         if (nr >= 3)
         {
             roll.loaded = 1; roll.film = n1; roll.shot = n2; roll.exposures = n3;
-            if (nr == 4) roll.number = n4;
+            roll.total = nr == 5 ? n5 : n2;
+            if (nr >= 4) roll.number = n4;
             continue;
         }
         if (!strncmp(line, "noroll", 6)) { roll.loaded = 0; continue; }
+        /* limit <n>: the roll limit setting (0 Off = no rolls, 1..3 = 36, 24, 12) */
+        if (sscanf(line, "limit %d", &n1) == 1) { settings[FS_ROLLLIM] = n1; continue; }
         if (sscanf(line, "open %63s", a) == 1)
         {
             open = !strcmp(a, "home") ? FOS_OPEN_HOME : !strcmp(a, "boot") ? FOS_OPEN_BOOT :

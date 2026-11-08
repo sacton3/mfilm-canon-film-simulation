@@ -1,0 +1,9 @@
+# no rolls (roll limit Off): the shelf has no exposures chip and SET says Use film; choose another film
+limit 0
+roll 1 14 36 12 143
+open shelf
+900 wr
+1150 wr
+2300 wl
+3000 set
+7000 end

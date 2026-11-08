@@ -58,6 +58,7 @@ static int settings[FS_COUNT] = {
     [FS_APKEYS] = 1, [FS_LENS_WIDE] = 6, [FS_FSTOP] = 9,
     [FS_STARTUP] = 2, [FS_PLAYLOCK] = 1, [FS_BOOTANIM] = 1, [FS_DEBUG] = 0, [FS_MODE] = 0,
     [FS_FILM] = 0, [FS_EXP] = 2, [FS_SCR_FLIP] = -1, [FS_EXPSIM] = 1,
+    [FS_ROLLLIM] = 3,       /* the demo keeps rolls (of 12 frames, as FS_EXP says): the camera's default is no rolls (0) */
 };
 static struct fos_roll roll;
 static int file_no = 100;                   /* the card's last IMG_nnnn */

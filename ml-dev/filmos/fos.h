@@ -112,8 +112,14 @@ enum
                            the port answers -1 on a camera that can't, and the item isn't shown */
     FS_EXPSIM,          /* LiveView's exposure simulation: 1 on (the exposure the frame gets), 0 off (bright
                            enough to focus a manual lens); -1 where Magic Lantern can't set it: not shown */
+    FS_ROLLLIM,         /* roll limit: 0 Off (no rolls, the default), 1 = 36, 2 = 24, 3 = 12 frames (an index
+                           into fos_exposure_choices, plus one). Off: the camera is always loaded and the screens
+                           say nothing of rolls; behind them it keeps a roll of FOS_SEGMENT frames and starts the
+                           next one by itself, same film, so the darkroom and the logs are the ones of a roll */
     FS_COUNT
 };
+
+#define FOS_SEGMENT 36          /* the roll the camera keeps behind the screens when the roll limit is Off */
 #define FOS_SCR_STEPS 6
 
 enum
@@ -137,6 +143,9 @@ struct fos_roll
     char loaded_at[20];         /* "2026-08-08 09:10" */
     int nrecent;                /* newest first */
     struct { int no; char time[6]; char fstop[6]; } recent[FOS_RECENT];
+    /* after recent, so the simulator's positional initialiser still fits */
+    int no_rolls;                   /* the roll limit is Off: show a count, not a roll (see FS_ROLLLIM) */
+    int total;                  /* then: frames shot on this film since it was chosen, over the hidden rolls; recent[].no counts the same way */
 };
 
 /* screens fos_ui_run can open on; BOOT_LV plays the boot animation and
@@ -207,6 +216,7 @@ struct fos_hud
     int focus_screen;
     const char *film;
     int iso;                    /* the film's speed (the top plate shows it) */
+    int no_rolls;                   /* the roll limit is Off: frame is a count since the film was chosen; no "/N", no frames-left bar */
 };
 
 struct fos_hud_palette

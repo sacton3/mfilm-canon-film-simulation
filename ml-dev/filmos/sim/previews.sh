@@ -27,17 +27,27 @@ run roll;   still roll 2400 roll; still roll 3000 rewind
 run pages;  still pages 1330 viewfinder; still pages 6190 lens; last pages system
 run screen; last screen screen          # its palette has the warmth it ends with
 
+# no rolls (roll limit Off, the camera's default): the screens that change
+run free_shelf;    still free_shelf 660 free-shelf; still free_shelf 4600 free-ready
+run free_home;     still free_home 1500 free-home
+run free_roll;     still free_roll 2800 free-frames
+run free_settings; still free_settings 2200 free-system; still free_settings 3300 free-system-36
+
 # the darkroom, on a card of test rolls (mkcard.sh): the list, developing, the prints
 ./mkcard.sh >/dev/null
 run endroll; last endroll end-of-roll
 run darkroom; still darkroom 2900 darkroom; still darkroom 12400 developing; still darkroom 22500 developing-line
 run prints; still prints 1300 prints-sheet; still prints 3500 prints-frame
+run free_darkroom; still free_darkroom 2800 free-darkroom
 
 # the HUD over a made-up LiveView picture
 gcc -O2 -std=gnu99 -o out/hudtest hudtest.c fonts.c ../fos_gfx.c ../fos_film.c ../fos_hud.c -lm
 ./out/hudtest 1 ${LIVEVIEW:-} && python3 -c "from PIL import Image; Image.open('out/hud.ppm').save('$OUT/hud.png')"
 # and the top plate a DSLR shows instead, shooting through the viewfinder
 ./out/hudtest p && python3 -c "from PIL import Image; Image.open('out/hud.ppm').save('$OUT/plate.png')"
+# the same with no rolls: a count of 143, no "/36", no frames-left bar
+./out/hudtest 1f ${LIVEVIEW:-} && python3 -c "from PIL import Image; Image.open('out/hud.ppm').save('$OUT/hud-free.png')"
+./out/hudtest pf && python3 -c "from PIL import Image; Image.open('out/hud.ppm').save('$OUT/plate-free.png')"
 
 # browsing the shelf, half size
 run browse

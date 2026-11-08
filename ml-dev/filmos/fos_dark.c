@@ -50,6 +50,14 @@ void dark_free()
 static void rescan()
 {
     nrolls = dm ? fos_lab_scan(rolls, MAX_ROLLS) : 0;
+    /* no rolls: a set with nothing shot on it (the one the camera has just started) is not worth a row */
+    if (ui_roll.no_rolls)
+    {
+        int n = 0;
+        for (int i = 0; i < nrolls; i++)
+            if (rolls[i].shot > 0) rolls[n++] = rolls[i];
+        nrolls = n;
+    }
 }
 
 static int roll_index(int number)
@@ -64,8 +72,14 @@ static int roll_index(int number)
  * (developing again skips the prints already made) */
 /* developed: every frame printed, and every print in DCIM as a JPEG */
 static int is_developed(const struct fos_lab_roll *r) { return r->sheet && r->developed >= r->shot && r->jpegs >= r->developed; }
-/* Basic mode: a finished roll still in the camera waits too; developing it finishes it (fos_port_action) */
-static int finished_in_camera(const struct fos_lab_roll *r) { return r->in_camera && !ui_realistic() && r->shot >= r->exposures; }
+/* Basic mode: a finished roll still in the camera waits too; developing it finishes it (fos_port_action).
+ * No rolls: what the camera has shot so far waits as soon as it has a frame; developing it ends that set and the
+ * camera starts the next one at once (fos_port_action) */
+static int finished_in_camera(const struct fos_lab_roll *r)
+{
+    if (ui_roll.no_rolls) return r->in_camera && r->shot >= 1;
+    return r->in_camera && !ui_realistic() && r->shot >= r->exposures;
+}
 static int is_waiting(const struct fos_lab_roll *r)
 {
     return !is_developed(r) && (!r->in_camera || finished_in_camera(r)) && r->shot > 0;
@@ -140,13 +154,19 @@ static void dark_bake()
     char b[96], eta[32];
     int frames, waiting = count_waiting(&frames);
     if (!nrolls)
-        snprintf(b, sizeof(b), ui_realistic() ? "No rolls yet " T_MDASH " finish one, rewind it, and it waits here."
-                                              : "No rolls yet " T_MDASH " finish one, and it waits here.");
+    {
+        if (ui_roll.no_rolls) snprintf(b, sizeof(b), "No frames yet " T_MDASH " shoot something, and it waits here.");
+        else snprintf(b, sizeof(b), ui_realistic() ? "No rolls yet " T_MDASH " finish one, rewind it, and it waits here."
+                                                   : "No rolls yet " T_MDASH " finish one, and it waits here.");
+    }
     else if (waiting)
     {
         format_eta(eta, sizeof(eta), frames, 0);
-        snprintf(b, sizeof(b), "%d roll%s to develop " T_DOT " %d frames " T_DOT " %s", waiting, waiting > 1 ? "s" : "", frames, eta);
+        if (ui_roll.no_rolls) snprintf(b, sizeof(b), "%d frame%s to develop " T_DOT " %s", frames, frames == 1 ? "" : "s", eta);
+        else snprintf(b, sizeof(b), "%d roll%s to develop " T_DOT " %d frames " T_DOT " %s", waiting, waiting > 1 ? "s" : "", frames, eta);
     }
+    else if (ui_roll.no_rolls)
+        snprintf(b, sizeof(b), "Everything is developed");
     else
         snprintf(b, sizeof(b), "Everything is developed " T_DOT " %d roll%s of prints", nrolls, nrolls > 1 ? "s" : "");
     int w = fos_text(cv, &fos_font_sm, DK_X, 106, b, C_TEXT3, OPAQUE, 0);
@@ -253,7 +273,8 @@ void dark_key(int k)
             if (!r) break;
             /* LEFT: Delete roll, never the one in the camera */
             if (r->in_camera && (k == FK_LEFT || !finished_in_camera(r)))
-                ui_toast(ui_realistic() ? "Still in the camera " T_MDASH " rewind it first"
+                ui_toast(ui_roll.no_rolls ? "Still in the camera"
+                       : ui_realistic() ? "Still in the camera " T_MDASH " rewind it first"
                                         : "Still in the camera " T_MDASH " finish it on the Roll page first");
             else if (k == FK_LEFT) dk_ask = has_prints(r) || r->jpegs ? DEL_WHICH : DEL_WHOLE;   /* no prints: no choice */
             else if (is_waiting(r) && k == FK_SET) marked[dk_sel] ^= 1;
@@ -261,7 +282,7 @@ void dark_key(int k)
             break;
         case FK_INFO:
             if (count_waiting(0)) dark_develop();
-            else ui_toast(nrolls ? "Nothing to develop" : "No rolls yet");
+            else ui_toast(nrolls ? "Nothing to develop" : ui_roll.no_rolls ? "No frames yet" : "No rolls yet");
             break;
         case FK_PLAY:
             ui_go(SCR_PRINTS, r && has_prints(r) ? r->number : 0, GO_FADE);
@@ -323,7 +344,8 @@ static void dark_row(int i, int y)
     char b[96];
     fos_text(cv, &fos_font_mdb, x + 42, y + 27, fos_films[r->film].name, sel ? C_TEXT : C_TEXT2, OPAQUE, 0);
     const char *when = r->last[0] ? r->last : r->loaded;
-    snprintf(b, sizeof(b), "Roll %03d " T_DOT " %d frame%s " T_DOT " %s", r->number, r->shot, r->shot == 1 ? "" : "s", short_date(when));
+    if (ui_roll.no_rolls) snprintf(b, sizeof(b), "%d frame%s " T_DOT " %s", r->shot, r->shot == 1 ? "" : "s", short_date(when));
+    else snprintf(b, sizeof(b), "Roll %03d " T_DOT " %d frame%s " T_DOT " %s", r->number, r->shot, r->shot == 1 ? "" : "s", short_date(when));
     fos_text(cv, &fos_font_sm, x + 42, y + 48, b, C_TEXT3, OPAQUE, 0);
     fcol c;
     if (r->in_camera && !finished_in_camera(r)) { snprintf(b, sizeof(b), "IN CAMERA"); c = C_TEXT3; }
@@ -340,11 +362,13 @@ static void dark_sheet()
     const struct fos_lab_roll *r = &rolls[dk_sel];
     char t[48], b[80];
     int which = dk_said == DEL_WHICH, prints = dk_said == DEL_PRINTS;
-    snprintf(t, sizeof(t), which ? "Delete roll %03d?" : prints ? "Delete its prints?" : "Delete all of roll %03d?", r->number);
-    snprintf(b, sizeof(b), "Its %d frame%s, prints and log. They can't come back.", r->shot, r->shot == 1 ? "" : "s");
+    if (ui_roll.no_rolls) snprintf(t, sizeof(t), which ? "Delete these frames?" : prints ? "Delete their prints?" : "Delete all of them?");
+    else snprintf(t, sizeof(t), which ? "Delete roll %03d?" : prints ? "Delete its prints?" : "Delete all of roll %03d?", r->number);
+    snprintf(b, sizeof(b), ui_roll.no_rolls ? "These %d frame%s, prints and log. They can't come back." : "Its %d frame%s, prints and log. They can't come back.",
+             r->shot, r->shot == 1 ? "" : "s");
     /* which part: SET, INFO; then sure? SET */
-    ui_sheet3(dk_sheet.x, t, which ? "Prints only keeps the RAW files and the log." : prints ? "Its JPEGs in DCIM go too." : b,
-              which ? "Prints only" : "Delete", which ? "Whole roll" : 0, which ? "Cancel" : "Keep");
+    ui_sheet3(dk_sheet.x, t, which ? "Prints only keeps the RAW files and the log." : prints ? "Their JPEGs in DCIM go too." : b,
+              which ? "Prints only" : "Delete", which ? (ui_roll.no_rolls ? "Everything" : "Whole roll") : 0, which ? "Cancel" : "Keep");
 }
 
 void dark_draw()
@@ -371,7 +395,8 @@ void dark_draw()
     fos_clip(cv, 0, DK_Y, FOS_W, DK_Y + DK_ROWS * DK_ROW);
     if (!nrolls)
     {
-        fos_text_c(cv, &fos_font_md, 360, DK_Y + 120, ui_realistic() ? "Shot rolls appear here once they are rewound." : "Shot rolls appear here once they are finished.", C_TEXT3, OPAQUE, 0);
+        fos_text_c(cv, &fos_font_md, 360, DK_Y + 120, ui_roll.no_rolls ? "Frames you shoot appear here, ready to develop."
+                   : ui_realistic() ? "Shot rolls appear here once they are rewound." : "Shot rolls appear here once they are finished.", C_TEXT3, OPAQUE, 0);
         *cv = save;
         return;
     }
@@ -1077,10 +1102,19 @@ static void draw_panel()
     if (finished)
     {
         fos_text_c(cv, &fos_font_xs, PANEL_CX, 150, "DONE", SL_ACCENT, OPAQUE, 64);
-        snprintf(b, sizeof(b), "%d roll%s", rolls_done, rolls_done == 1 ? "" : "s");
-        fos_text_c(cv, &fos_font_lg, PANEL_CX, 182, b, SL_TEXT, OPAQUE, 0);
-        snprintf(b, sizeof(b), "%d print%s", done_frames - failed_frames, done_frames - failed_frames == 1 ? "" : "s");
-        fos_text_c(cv, &fos_font_sm, PANEL_CX, 206, b, SL_TEXT2, OPAQUE, 0);
+        if (ui_roll.no_rolls)
+        {
+            /* no rolls: the prints are what was made */
+            snprintf(b, sizeof(b), "%d print%s", done_frames - failed_frames, done_frames - failed_frames == 1 ? "" : "s");
+            fos_text_c(cv, &fos_font_lg, PANEL_CX, 182, b, SL_TEXT, OPAQUE, 0);
+        }
+        else
+        {
+            snprintf(b, sizeof(b), "%d roll%s", rolls_done, rolls_done == 1 ? "" : "s");
+            fos_text_c(cv, &fos_font_lg, PANEL_CX, 182, b, SL_TEXT, OPAQUE, 0);
+            snprintf(b, sizeof(b), "%d print%s", done_frames - failed_frames, done_frames - failed_frames == 1 ? "" : "s");
+            fos_text_c(cv, &fos_font_sm, PANEL_CX, 206, b, SL_TEXT2, OPAQUE, 0);
+        }
         if (failed_frames)
         {
             snprintf(b, sizeof(b), "%d frame%s could not be developed", failed_frames, failed_frames == 1 ? "" : "s");
@@ -1232,7 +1266,7 @@ void prints_enter(int arg)
         ui_to_bg(1);
         ui_status_bar("PRINTS");
         fos_text_c(cv, &fos_font_lg, 360, 220, "No prints yet", C_TEXT, OPAQUE, 0);
-        fos_text_c(cv, &fos_font_sm, 360, 248, "Develop a roll in the darkroom and its prints show here.", C_TEXT3, OPAQUE, 0);
+        fos_text_c(cv, &fos_font_sm, 360, 248, ui_roll.no_rolls ? "Develop frames in the darkroom and their prints show here." : "Develop a roll in the darkroom and its prints show here.", C_TEXT3, OPAQUE, 0);
         struct hint h[] = { { "SET", "Darkroom" }, { "MENU", "Back" } };
         ui_hints(h, 2);
         ui_to_bg(0);

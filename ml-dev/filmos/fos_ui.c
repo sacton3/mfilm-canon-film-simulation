@@ -212,8 +212,11 @@ void ui_status_bar(const char *title)
     rx -= fos_text_r(cv, &fos_font_mdb, rx, y + 1, clock, C_TEXT, OPAQUE, 0) + 18;
     if (ui_roll.loaded)
     {
-        int left = ui_roll.exposures - ui_roll.shot;
-        if (left > 0)
+        /* no rolls: the film and the count, never an end (the count is over the hidden rolls) */
+        int left = ui_roll.no_rolls ? 1 : ui_roll.exposures - ui_roll.shot;
+        if (ui_roll.no_rolls)
+            snprintf(buf, sizeof(buf), "%s  %d", fos_films[ui_roll.film].name, ui_roll.total);
+        else if (left > 0)
             snprintf(buf, sizeof(buf), "%s  %d/%d", fos_films[ui_roll.film].name, ui_roll.shot, ui_roll.exposures);
         else
             snprintf(buf, sizeof(buf), "%s  END OF ROLL", fos_films[ui_roll.film].name);

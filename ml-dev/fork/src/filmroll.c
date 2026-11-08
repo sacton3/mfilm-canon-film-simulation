@@ -72,6 +72,7 @@ extern void CancelDateTimer();
 /* user settings */
 static CONFIG_INT("filmroll.film",      film_sel,         0);
 static CONFIG_INT("filmroll.exp",       exp_sel,          0);
+static CONFIG_INT("filmroll.rolllim",   roll_limit,       0);   /* FS_ROLLLIM: 0 Off (no rolls), 1 36, 2 24, 3 12 */
 static CONFIG_INT("filmroll.hud",       hud_enabled,      1);
 static CONFIG_INT("filmroll.focus",     focus_screen,     1);
 static CONFIG_INT("filmroll.leds",      leds_on_half,     1);
@@ -100,6 +101,7 @@ static CONFIG_INT("filmroll.shot",      frames_shot,      0);
 static CONFIG_INT("filmroll.lastfile",  last_file_number, -1);
 static CONFIG_INT("filmroll.logdir",    roll_folder,      0);
 static CONFIG_INT("filmroll.needwind",  need_wind,        0);
+static CONFIG_INT("filmroll.run_shot",  run_shot,         0);   /* roll limit Off: frames shot on this film since it was chosen */
 
 static char log_path[64];
 
@@ -108,6 +110,12 @@ static volatile int hud_dirty = 1;
 
 #define ROLL_FINISHED (roll_loaded && frames_shot >= roll_exposures)
 #define ROLL_IN_PROGRESS (roll_loaded && frames_shot < roll_exposures)
+
+/* Roll limit Off (the default): no rolls for the person shooting. The camera is always loaded, with a roll
+ * of FOS_SEGMENT frames behind the screens; at its last frame it closes the log and starts the next one,
+ * same film, without a word. On the card that is back-to-back rolls of 36, as Basic mode makes them, so the
+ * darkroom, the contact sheets and Darkrooms read them as they always did. */
+#define FREE_ROLLS (roll_limit == 0)
 
 static volatile int end_due = 0;        /* the roll was just finished: ms when to ask about it */
 static volatile int dev_busy = 0;       /* developing: keep the camera awake */
@@ -251,6 +259,11 @@ static void read_back_log()
         line = next;
     }
     fio_free(buf);
+
+    /* no rolls: the numbers on screen go on over the hidden rolls, and the log's own restart at 1 */
+    if (FREE_ROLLS && run_shot > frames_shot)
+        for (int i = 0; i < nrecent; i++)
+            recent[i].no += run_shot - frames_shot;
 }
 
 /* ---------------------------------------------------------------- camera settings */
@@ -405,8 +418,10 @@ static void step_manual_fstop(int dir)
 /* ---------------------------------------------------------------- rolls */
 
 /* start a roll: state and log now, camera settings once the film OS has
- * let go of the screen (apply_film blocks for a while) */
-static void load_roll(int film, int exposures)
+ * let go of the screen (apply_film blocks for a while). continued_from is the
+ * number of the roll this one follows by itself (no rolls: the last one just
+ * filled); 0 for a roll that is loaded. */
+static void load_roll(int film, int exposures, int continued_from)
 {
     roll_film = COERCE(film, 0, fos_nfilms - 1);
     roll_exposures = exposures;
@@ -423,32 +438,72 @@ static void load_roll(int film, int exposures)
     }
     frames_shot = 0;
     need_wind = 0;
-    last_file_number = get_shooting_card()->file_number;
+    /* a roll that follows another by itself is started while frames may still be
+     * coming in (poll_frames is in the middle of a batch): the file number it
+     * counts from must stay, or a frame Canon wrote meanwhile would be skipped */
+    if (continued_from <= 0)
+        last_file_number = get_shooting_card()->file_number;
     roll_loaded = 1;
     update_log_path();
-    write_header("");
+    if (continued_from > 0)
+    {
+        char note[48];
+        snprintf(note, sizeof(note), " - auto-continued from roll %03d", continued_from);
+        write_header(note);
+    }
+    else
+        write_header("");
 
-    char when[32];
-    format_now(when, sizeof(when));
-    fos_copy(loaded_at, sizeof(loaded_at), when, 16);
-    nrecent = 0;
-    recent_valid = 1;
+    if (continued_from <= 0)
+    {
+        char when[32];
+        format_now(when, sizeof(when));
+        fos_copy(loaded_at, sizeof(loaded_at), when, 16);
+        nrecent = 0;
+        recent_valid = 1;
+    }
 
     hud_dirty = 1;
-    dbg("roll %03d loaded: %s, %d exp", roll_number, fos_films[COERCE(roll_film, 0, fos_nfilms - 1)].key, roll_exposures);
+    dbg("roll %03d loaded: %s, %d exp%s", roll_number, fos_films[COERCE(roll_film, 0, fos_nfilms - 1)].key, roll_exposures,
+        continued_from > 0 ? " (by itself)" : "");
+}
+
+/* the line that ends a roll's log (Darkrooms reads it, so it stays as it was) */
+static void close_log()
+{
+    char when[32], line[80];
+    format_now(when, sizeof(when));
+    snprintf(line, sizeof(line), "\n# rewound %s after %d of %d frames\n", when, frames_shot, roll_exposures);
+    log_append(line);
 }
 
 static void rewind_roll()
 {
     if (!roll_loaded) return;
-    char when[32], line[80];
-    format_now(when, sizeof(when));
-    snprintf(line, sizeof(line), "\n# rewound %s after %d of %d frames\n", when, frames_shot, roll_exposures);
-    log_append(line);
+    close_log();
     roll_loaded = 0;
     need_wind = 0;
     hud_dirty = 1;
     dbg("roll %03d rewound at %d/%d", roll_number, frames_shot, roll_exposures);
+}
+
+/* no rolls: the roll the camera keeps ends without a mark. One with nothing shot on it loses its log,
+ * so choosing films leaves behind only the rolls that have frames. The caller loads the next one. */
+static void end_roll_quietly()
+{
+    if (!roll_loaded) return;
+    if (frames_shot == 0)
+    {
+        if (!log_path[0])
+            update_log_path();
+        FIO_RemoveFile(log_path);
+        dbg("roll %03d: nothing shot, log removed", roll_number);
+    }
+    else
+    {
+        close_log();
+        dbg("roll %03d closed at %d/%d", roll_number, frames_shot, roll_exposures);
+    }
 }
 
 static void record_frame(int file_number)
@@ -460,6 +515,8 @@ static void record_frame(int file_number)
     }
 
     frames_shot++;
+    if (FREE_ROLLS)
+        run_shot++;
 
     char when[32];
     char aperture[8];
@@ -481,7 +538,7 @@ static void record_frame(int file_number)
 
     for (int i = MIN(nrecent, FOS_RECENT - 1); i > 0; i--)
         recent[i] = recent[i - 1];
-    recent[0].no = frames_shot;
+    recent[0].no = FREE_ROLLS ? run_shot : frames_shot;      /* no rolls: the count goes on over the hidden rolls */
     fos_copy(recent[0].time, sizeof(recent[0].time), when + 11, 5);
     snprintf(recent[0].fstop, sizeof(recent[0].fstop), "%s", aperture);
     nrecent = MIN(nrecent + 1, FOS_RECENT);
@@ -491,6 +548,17 @@ static void record_frame(int file_number)
 
     if (frames_shot == roll_exposures)
     {
+        if (FREE_ROLLS)
+        {
+            /* no rolls: this one ends here without a beep or a question, and the next starts at once,
+             * same film. Camera settings stay as they are (applying them takes a while) */
+            int last = roll_number;
+            close_log();
+            load_roll(roll_film, FOS_SEGMENT, last);
+            if (wind_mode)
+                need_wind = 1;
+            return;
+        }
         need_wind = 0;
         beep_times(2);
         end_due = get_ms_clock() + 1500;        /* then ask: develop it now? */
@@ -533,7 +601,8 @@ static void poll_frames()
     dbg("frames: file %d -> %d, logging %d", prev, now, count);
     for (int i = 1; i <= count; i++)
     {
-        if (i == first_new)
+        /* (not when a roll that followed another by itself in this batch was already started in the new folder) */
+        if (i == first_new && roll_folder != folder)
         {
             roll_folder = folder;
             update_log_path();
@@ -1100,6 +1169,8 @@ void fos_port_roll(struct fos_roll *r)
     r->exposures = roll_exposures;
     r->shot = frames_shot;
     r->need_wind = need_wind;
+    r->no_rolls = FREE_ROLLS;
+    r->total = run_shot;
     snprintf(r->loaded_at, sizeof(r->loaded_at), "%s", loaded_at);
     r->nrecent = nrecent;
     for (int i = 0; i < nrecent && i < FOS_RECENT; i++)
@@ -1185,6 +1256,7 @@ static int *setting_var(int s)
         case FS_SCR_BRIGHT: return &scr_bright;
         case FS_SCR_FLIP:   return &scr_flip;
         case FS_EXPSIM:     return &expsim_set;
+        case FS_ROLLLIM:    return &roll_limit;
     }
     return 0;
 }
@@ -1198,11 +1270,29 @@ int fos_port_get(int s)
     return v ? *v : 0;
 }
 
+/* the roll limit changed: the roll in the camera ends (the log keeps what was shot on it), and with the
+ * limit Off the camera is loaded again at once, with the film it had; a limit leaves it unloaded until a
+ * roll is loaded on the shelf, as before */
+static void roll_limit_changed()
+{
+    int film = roll_loaded ? roll_film : film_sel;
+    end_roll_quietly();
+    roll_loaded = 0;
+    need_wind = 0;
+    run_shot = 0;
+    hud_dirty = 1;
+    if (FREE_ROLLS)
+        load_roll(film, FOS_SEGMENT, 0);
+}
+
 void fos_port_set(int s, int value)
 {
     int *v = setting_var(s);
+    int old = v ? *v : 0;
     if (v) *v = value;
     hud_dirty = 1;
+    if (s == FS_ROLLLIM && value != old)
+        roll_limit_changed();
     if (s == FS_SCR_FLIP) flip_step(1);
     if (s == FS_EXPSIM) expsim_due = 1;
     /* screen colour: the whole film OS changes at once */
@@ -1215,16 +1305,38 @@ void fos_port_set(int s, int value)
 
 void fos_port_action(int action, int a, int b)
 {
+    (void) b;                   /* the roll size is the roll limit's now, not the shelf's */
     switch (action)
     {
         case FA_LOAD:
-            if (ROLL_IN_PROGRESS) rewind_roll();
-            load_roll(a, fos_exposure_choices[COERCE(b, 0, FOS_NEXP - 1)]);
+            if (FREE_ROLLS)
+            {
+                /* no rolls: choosing a film changes the film. The one the camera has already changes
+                 * nothing but the camera settings (the shelf opens on it at start-up) */
+                if (!(roll_loaded && COERCE(a, 0, fos_nfilms - 1) == roll_film))
+                {
+                    end_roll_quietly();
+                    run_shot = 0;
+                    load_roll(a, FOS_SEGMENT, 0);
+                }
+            }
+            else
+            {
+                /* a roll limit: the size is the setting's, not the shelf's */
+                if (ROLL_IN_PROGRESS) rewind_roll();
+                load_roll(a, fos_exposure_choices[COERCE(roll_limit - 1, 0, FOS_NEXP - 1)], 0);
+            }
             ui_after |= AFTER_APPLY;
             break;
         case FA_REWIND:
+        {
+            /* (no rolls: the darkroom ends the roll to develop it; the camera is never without one) */
+            int last = roll_number, film = roll_film;
             rewind_roll();
+            if (FREE_ROLLS)
+                load_roll(film, FOS_SEGMENT, last);
             break;
+        }
         case FA_BUSY:
             if (a && !dev_busy) powersave_prohibit();
             if (!a && dev_busy) powersave_permit();
@@ -1532,9 +1644,10 @@ static void hud_draw(int lit, int blink, int plate, int all, int only_stale)
         h.want = h.fstop + (ev8 * 3 + (ev8 >= 0 ? 4 : -4)) / 8;
     }
     shutter_led(h.shutter, sizeof(h.shutter));
-    h.frame = frames_shot + 1;
+    h.frame = (FREE_ROLLS ? run_shot : frames_shot) + 1;       /* no rolls: a count that goes on over the hidden rolls */
     h.exposures = roll_exposures;
-    h.finished = ROLL_FINISHED;
+    h.finished = FREE_ROLLS ? 0 : ROLL_FINISHED;
+    h.no_rolls = FREE_ROLLS;
     h.need_wind = need_wind;
     h.focus_screen = focus_screen;
     h.film = fos_films[COERCE(roll_film, 0, fos_nfilms - 1)].name;
@@ -1677,7 +1790,7 @@ static void hud_step()
     int blink = (now / 400) % 2;
     int ev8 = lit ? get_ae_value() : 0;
 
-    int sig = lit | blink << 1 | need_wind << 2 | (frames_shot & 0xFF) << 3
+    int sig = lit | blink << 1 | need_wind << 2 | ((frames_shot + run_shot) & 0xFF) << 3
             | lens_info.raw_shutter << 11 | (ev8 & 0xFF) << 19 | (current_fstop() & 0x1F) << 27;
 
     /* put together on change (the rows that changed go to the screen), the
@@ -1985,6 +2098,14 @@ static void filmroll_task()
     load_fonts();
     load_films();
     dbg("read: %s", card_buffer() ? "card buffer ready" : "no card buffer: the darkroom can't read the card");
+    /* no rolls: the camera is always loaded, so a card that has never had a roll gets one now, with the
+     * film it had last. Its camera settings go in when the film OS next lets go of the screen, as for a
+     * loaded roll (the start-up screen is the film OS) */
+    if (FREE_ROLLS && !roll_loaded)
+    {
+        load_roll(film_sel, FOS_SEGMENT, 0);
+        ui_after |= AFTER_APPLY;
+    }
     startup_task();
     film_capture_check();
 
